@@ -60,8 +60,10 @@ static int hwts_init(int fd, const char *device, int rx_filter, int tx_type)
 	cfg.rx_filter  = rx_filter;
 	req = cfg;
 	err = ioctl(fd, SIOCSHWTSTAMP, &ifreq);
-	if (err < 0)
-		return err;
+	// HACK - SIOCHWTSTAMP is not passed through the ieee802154 layer
+	//if (err < 0)
+	//return err;
+	(void) err;
 
 	if (memcmp(&cfg, &req, sizeof(cfg))) {
 
@@ -151,6 +153,11 @@ int sk_get_ts_info(const char *name, struct sk_ts_info *sk_info)
 	sk_info->so_timestamping = info.so_timestamping;
 	sk_info->tx_types = info.tx_types;
 	sk_info->rx_filters = info.rx_filters;
+	// HACK - SIOCETHTOOL is not passed through the ieee802154 layer
+	sk_info->phc_index = 0;
+	sk_info->so_timestamping = (SOF_TIMESTAMPING_TX_HARDWARE |
+				    SOF_TIMESTAMPING_RX_HARDWARE |
+				    SOF_TIMESTAMPING_RAW_HARDWARE);
 
 	return 0;
 failed:
@@ -375,6 +382,15 @@ int sk_receive(int fd, void *buf, int buflen,
 			hwts->ts = timehires_to_tmv(hr[0]);
 		} else {
 			hwts->ts = timespec_to_tmv(ts[2]);
+		}
+		// HACK - temporary sub-nanosecond timestamp API
+		if (1) {
+			uint64_t x;
+			uint64_t ns;
+			x = ts[2].tv_sec * NS_PER_SEC + ts[2].tv_nsec;
+			ns = (x >> 8) + 0x1500000000000000ULL;
+			hwts->ts.ns = ns;
+			hwts->ts.frac = ((x & 0xff) << 8);
 		}
 		break;
 	case TS_LEGACY_HW:

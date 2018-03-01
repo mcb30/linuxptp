@@ -352,29 +352,6 @@ static void fc_prune(struct foreign_clock *fc)
 	}
 }
 
-static void ts_add(struct timespec *ts, int ns)
-{
-	if (!ns) {
-		return;
-	}
-	ts->tv_nsec += ns;
-	while (ts->tv_nsec < 0) {
-		ts->tv_nsec += (long) NS_PER_SEC;
-		ts->tv_sec--;
-	}
-	while (ts->tv_nsec >= (long) NS_PER_SEC) {
-		ts->tv_nsec -= (long) NS_PER_SEC;
-		ts->tv_sec++;
-	}
-}
-
-static void ts_to_timestamp(struct timespec *src, struct Timestamp *dst)
-{
-	dst->seconds_lsb = src->tv_sec;
-	dst->seconds_msb = 0;
-	dst->nanoseconds = src->tv_nsec;
-}
-
 /*
  * Returns non-zero if the announce message is different than last.
  */
@@ -470,14 +447,14 @@ static void free_foreign_masters(struct port *p)
 
 static int fup_sync_ok(struct ptp_message *fup, struct ptp_message *sync)
 {
-	int64_t tfup, tsync;
-	tfup = tmv_to_nanoseconds(timespec_to_tmv(fup->hwts.sw));
-	tsync = tmv_to_nanoseconds(timespec_to_tmv(sync->hwts.sw));
+	tmv_t tfup, tsync;
+	tfup = hwts_sw_to_tmv(&fup->hwts);
+	tsync = hwts_sw_to_tmv(&sync->hwts);
 	/*
 	 * NB - If the sk_check_fupsync option is not enabled, then
 	 * both of these time stamps will be zero.
 	 */
-	if (tfup < tsync) {
+	if (tmv_cmp(tfup, tsync) < 0) {
 		return 0;
 	}
 	return 1;
@@ -552,7 +529,7 @@ static int peer_prepare_and_send(struct port *p, struct ptp_message *msg,
 		return -1;
 	}
 	if (msg_sots_valid(msg)) {
-		ts_add(&msg->hwts.ts, p->tx_timestamp_offset);
+		msg->hwts.latency = p->tx_timestamp_offset;
 	}
 	return 0;
 }
@@ -1037,7 +1014,7 @@ static void port_slave_priority_warning(struct port *p)
 }
 
 static void port_synchronize(struct port *p,
-			     struct timespec ingress_ts,
+			     const struct hw_timestamp *ingress_ts,
 			     struct timestamp origin_ts,
 			     Integer64 correction1, Integer64 correction2)
 {
@@ -1047,7 +1024,7 @@ static void port_synchronize(struct port *p,
 	port_set_sync_rx_tmo(p);
 
 	t1 = timestamp_to_tmv(origin_ts);
-	t2 = timespec_to_tmv(ingress_ts);
+	t2 = hwts_to_tmv(ingress_ts);
 	c1 = correction_to_tmv(correction1);
 	c2 = correction_to_tmv(correction2);
 	t1c = tmv_add(t1, tmv_add(c1, c2));
@@ -1122,7 +1099,7 @@ static void port_syfufsm(struct port *p, enum syfu_event event,
 			break;
 		case FUP_MATCH:
 			syn = p->last_syncfup;
-			port_synchronize(p, syn->hwts.ts, m->ts.pdu,
+			port_synchronize(p, &syn->hwts, m->ts.pdu,
 					 syn->header.correction,
 					 m->header.correction);
 			msg_put(p->last_syncfup);
@@ -1141,7 +1118,7 @@ static void port_syfufsm(struct port *p, enum syfu_event event,
 			break;
 		case SYNC_MATCH:
 			fup = p->last_syncfup;
-			port_synchronize(p, m->hwts.ts, fup->ts.pdu,
+			port_synchronize(p, &m->hwts, fup->ts.pdu,
 					 m->header.correction,
 					 fup->header.correction);
 			msg_put(p->last_syncfup);
@@ -1380,7 +1357,8 @@ static int port_tx_sync(struct port *p)
 	fup->header.control            = CTL_FOLLOW_UP;
 	fup->header.logMessageInterval = p->logSyncInterval;
 
-	ts_to_timestamp(&msg->hwts.ts, &fup->follow_up.preciseOriginTimestamp);
+	tmv_to_Timestamp(hwts_to_tmv(&msg->hwts),
+			 &fup->follow_up.preciseOriginTimestamp);
 
 	err = port_prepare_and_send(p, fup, 0);
 	if (err)
@@ -1661,7 +1639,8 @@ static int process_delay_req(struct port *p, struct ptp_message *m)
 	msg->header.control            = CTL_DELAY_RESP;
 	msg->header.logMessageInterval = p->logMinDelayReqInterval;
 
-	ts_to_timestamp(&m->hwts.ts, &msg->delay_resp.receiveTimestamp);
+	tmv_to_Timestamp(hwts_to_tmv(&m->hwts),
+			 &msg->delay_resp.receiveTimestamp);
 
 	msg->delay_resp.requestingPortIdentity = m->header.sourcePortIdentity;
 
@@ -1701,7 +1680,7 @@ static void process_delay_resp(struct port *p, struct ptp_message *m)
 		return;
 
 	c3 = correction_to_tmv(m->header.correction);
-	t3 = timespec_to_tmv(p->delay_req->hwts.ts);
+	t3 = hwts_to_tmv(&p->delay_req->hwts);
 	t4 = timestamp_to_tmv(m->ts.pdu);
 	t4c = tmv_sub(t4, c3);
 
@@ -1823,7 +1802,8 @@ static int process_pdelay_req(struct port *p, struct ptp_message *m)
 	 * NB - We do not have any fraction nanoseconds for the correction
 	 * fields, neither in the response or the follow up.
 	 */
-	ts_to_timestamp(&m->hwts.ts, &rsp->pdelay_resp.requestReceiptTimestamp);
+	tmv_to_Timestamp(hwts_to_tmv(&m->hwts),
+			 &rsp->pdelay_resp.requestReceiptTimestamp);
 	rsp->pdelay_resp.requestingPortIdentity = m->header.sourcePortIdentity;
 
 	fup->hwts.type = p->timestamping;
@@ -1850,8 +1830,8 @@ static int process_pdelay_req(struct port *p, struct ptp_message *m)
 		goto out;
 	}
 
-	ts_to_timestamp(&rsp->hwts.ts,
-			&fup->pdelay_resp_fup.responseOriginTimestamp);
+	tmv_to_Timestamp(hwts_to_tmv(&rsp->hwts),
+			 &fup->pdelay_resp_fup.responseOriginTimestamp);
 
 	err = peer_prepare_and_send(p, fup, 0);
 	if (err)
@@ -1881,8 +1861,8 @@ static void port_peer_delay(struct port *p)
 	if (rsp->header.sequenceId != ntohs(req->header.sequenceId))
 		return;
 
-	t1 = timespec_to_tmv(req->hwts.ts);
-	t4 = timespec_to_tmv(rsp->hwts.ts);
+	t1 = hwts_to_tmv(&req->hwts);
+	t4 = hwts_to_tmv(&rsp->hwts);
 	c1 = correction_to_tmv(rsp->header.correction + p->asymmetry);
 
 	/* Process one-step response immediately. */
@@ -2023,7 +2003,7 @@ static void process_sync(struct port *p, struct ptp_message *m)
 	m->header.correction += p->asymmetry;
 
 	if (one_step(m)) {
-		port_synchronize(p, m->hwts.ts, m->ts.pdu,
+		port_synchronize(p, &m->hwts, m->ts.pdu,
 				 m->header.correction, 0);
 		flush_last_sync(p);
 		return;
@@ -2366,8 +2346,9 @@ enum fsm_event port_event(struct port *p, int fd_index)
 		return EV_NONE;
 	}
 	if (msg_sots_valid(msg)) {
-		ts_add(&msg->hwts.ts, -p->rx_timestamp_offset);
-		clock_check_ts(p->clock, msg->hwts.ts);
+		msg->hwts.latency = -p->rx_timestamp_offset;
+		clock_check_ts(p->clock,
+			       tmv_to_nanoseconds(hwts_to_tmv(&msg->hwts)));
 	}
 	if (port_ignore(p, msg)) {
 		msg_put(msg);
@@ -2444,7 +2425,7 @@ int port_prepare_and_send(struct port *p, struct ptp_message *msg, int event)
 		return -1;
 	}
 	if (msg_sots_valid(msg)) {
-		ts_add(&msg->hwts.ts, p->tx_timestamp_offset);
+		msg->hwts.latency = p->tx_timestamp_offset;
 	}
 	return 0;
 }

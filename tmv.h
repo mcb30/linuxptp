@@ -38,6 +38,7 @@ struct hw_timestamp {
 	enum timestamp_type type;
 	struct timespec ts;
 	struct timespec sw;
+	int latency;
 };
 
 /**
@@ -109,6 +110,14 @@ static inline int64_t tmv_to_nanoseconds(tmv_t x)
 	return x;
 }
 
+static inline void tmv_to_Timestamp(tmv_t x, struct Timestamp *ts)
+{
+	uint64_t seconds = x / NS_PER_SEC;
+	ts->seconds_lsb = seconds;
+	ts->seconds_msb = (seconds >> 32);
+	ts->nanoseconds = (x % NS_PER_SEC);
+}
+
 static inline TimeInterval tmv_to_TimeInterval(tmv_t x)
 {
 	return x << 16;
@@ -122,6 +131,18 @@ static inline tmv_t timespec_to_tmv(struct timespec ts)
 static inline tmv_t timestamp_to_tmv(struct timestamp ts)
 {
 	return ts.sec * NS_PER_SEC + ts.nsec;
+}
+
+static inline tmv_t hwts_to_tmv(const struct hw_timestamp *hwts)
+{
+	tmv_t t = timespec_to_tmv(hwts->ts);
+	t += hwts->latency;
+	return t;
+}
+
+static inline tmv_t hwts_sw_to_tmv(const struct hw_timestamp *hwts)
+{
+	return timespec_to_tmv(hwts->sw);
 }
 
 #endif

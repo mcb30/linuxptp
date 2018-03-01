@@ -27,6 +27,19 @@
 
 #define NS_PER_SEC 1000000000LL
 
+enum timestamp_type {
+	TS_SOFTWARE,
+	TS_HARDWARE,
+	TS_LEGACY_HW,
+	TS_ONESTEP,
+};
+
+struct hw_timestamp {
+	enum timestamp_type type;
+	struct timespec ts;
+	struct timespec sw;
+};
+
 /**
  * We implement the time value as a 64 bit signed integer containing
  * nanoseconds. Using this representation, we could really spare the

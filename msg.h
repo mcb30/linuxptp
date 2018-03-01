@@ -55,19 +55,6 @@
 #define TIME_TRACEABLE (1<<4)
 #define FREQ_TRACEABLE (1<<5)
 
-enum timestamp_type {
-	TS_SOFTWARE,
-	TS_HARDWARE,
-	TS_LEGACY_HW,
-	TS_ONESTEP,
-};
-
-struct hw_timestamp {
-	enum timestamp_type type;
-	struct timespec ts;
-	struct timespec sw;
-};
-
 enum controlField {
 	CTL_SYNC,
 	CTL_DELAY_REQ,

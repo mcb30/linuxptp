@@ -40,6 +40,7 @@
 
 int sk_tx_timeout = 1;
 int sk_check_fupsync;
+int sk_no_hires;
 
 /* private methods */
 
@@ -238,6 +239,11 @@ int sk_interface_macaddr(const char *name, struct address *mac)
 			}
 			mac->sll.sll_halen = EUI64;
 			break;
+		case ARPHRD_6LOWPAN:
+			memcpy(mac->sll.sll_addr, &ifreq.ifr_hwaddr.sa_data,
+			       GUID_LEN);
+			mac->sll.sll_halen = EUI64;
+			break;
 		default:
 			memcpy(mac->sll.sll_addr, &ifreq.ifr_hwaddr.sa_data, MAC_LEN);
 			mac->sll.sll_halen = EUI48;
@@ -293,6 +299,7 @@ int sk_receive(int fd, void *buf, int buflen,
 	struct iovec iov = { buf, buflen };
 	struct msghdr msg;
 	struct timespec *sw, *ts = NULL;
+	struct timehires *hr = NULL;
 
 	memset(control, 0, sizeof(control));
 	memset(&msg, 0, sizeof(msg));
@@ -333,6 +340,10 @@ int sk_receive(int fd, void *buf, int buflen,
 				pr_warning("short SO_TIMESTAMPING message");
 				return -1;
 			}
+			if (cm->cmsg_len >= sizeof(*ts) * 3 + sizeof(*hr)) {
+				hr = (struct timehires *)
+					(CMSG_DATA(cm) + sizeof(*ts) * 3);
+			}
 			ts = (struct timespec *) CMSG_DATA(cm);
 		}
 		if (SOL_SOCKET == level && SO_TIMESTAMPNS == type) {
@@ -360,7 +371,11 @@ int sk_receive(int fd, void *buf, int buflen,
 	case TS_HARDWARE:
 	case TS_ONESTEP:
 	case TS_P2P1STEP:
-		hwts->ts = timespec_to_tmv(ts[2]);
+		if (hr && !sk_no_hires) {
+			hwts->ts = timehires_to_tmv(hr[0]);
+		} else {
+			hwts->ts = timespec_to_tmv(ts[2]);
+		}
 		break;
 	case TS_LEGACY_HW:
 		hwts->ts = timespec_to_tmv(ts[1]);
